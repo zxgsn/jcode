@@ -61,12 +61,18 @@ fi
 builds_dir="$HOME/.jcode/builds"
 version_dir="$builds_dir/versions/$hash"
 mkdir -p "$version_dir"
-install -m 755 "$bin" "$version_dir/jcode"
+
+# On Windows (MINGW/MSYS/Cygwin), preserve .exe extension
+bin_name="jcode"
+if [[ "$OSTYPE" == msys* ]] || [[ "$OSTYPE" == cygwin* ]] || [[ -f "$bin.exe" ]] || [[ "$bin" == *.exe ]]; then
+    bin_name="jcode.exe"
+fi
+install -m 755 "$bin" "$version_dir/$bin_name"
 
 # Update stable symlink
 stable_dir="$builds_dir/stable"
 mkdir -p "$stable_dir"
-ln -sfn "$version_dir/jcode" "$stable_dir/jcode"
+ln -sfn "$version_dir/$bin_name" "$stable_dir/$bin_name"
 
 # Update stable-version marker
 printf '%s\n' "$hash" > "$builds_dir/stable-version"
@@ -74,18 +80,28 @@ printf '%s\n' "$hash" > "$builds_dir/stable-version"
 # Update current symlink + marker
 current_dir="$builds_dir/current"
 mkdir -p "$current_dir"
-ln -sfn "$version_dir/jcode" "$current_dir/jcode"
+ln -sfn "$version_dir/$bin_name" "$current_dir/$bin_name"
 printf '%s\n' "$hash" > "$builds_dir/current-version"
 
 # Update launcher path to current channel
 install_dir="${JCODE_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$install_dir"
-ln -sfn "$current_dir/jcode" "$install_dir/jcode"
+ln -sfn "$current_dir/$bin_name" "$install_dir/$bin_name"
 
-echo "Installed: $version_dir/jcode"
-echo "Updated stable symlink: $stable_dir/jcode -> $version_dir/jcode"
-echo "Updated current symlink: $current_dir/jcode -> $version_dir/jcode"
-echo "Updated launcher symlink: $install_dir/jcode -> $current_dir/jcode"
+# On Windows, also create .bat wrapper for PowerShell/CMD compatibility
+if [[ "$bin_name" == *.exe ]]; then
+    cat > "$install_dir/jcode.bat" << 'BEOF'
+@echo off
+"%~dp0jcode.exe" %*
+BEOF
+    # Also create symlink without .exe for bash compatibility
+    ln -sfn "$current_dir/$bin_name" "$install_dir/jcode"
+fi
+
+echo "Installed: $version_dir/$bin_name"
+echo "Updated stable symlink: $stable_dir/$bin_name -> $version_dir/$bin_name"
+echo "Updated current symlink: $current_dir/$bin_name -> $version_dir/$bin_name"
+echo "Updated launcher symlink: $install_dir/$bin_name -> $current_dir/$bin_name"
 
 # Gracefully reload any running background server onto the binary we just
 # installed (issue #291). `server reload` only reloads when the running daemon

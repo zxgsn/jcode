@@ -10,6 +10,9 @@ pub const ALL_CLAUDE_MODELS: &[&str] = &[
     "claude-opus-4-5",
     "claude-sonnet-4-5",
     "claude-sonnet-4-20250514",
+    // Xiaomi MiMo models (Anthropic-compatible)
+    "mimo-v2.5-pro",
+    "mimo-v2.5",
 ];
 
 /// Available OpenAI models used by model lists and provider routing.

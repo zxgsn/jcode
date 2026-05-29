@@ -390,7 +390,7 @@ pub const XIAOMI_MIMO_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile
     api_key_env: "XIAOMI_MIMO_API_KEY",
     env_file: "xiaomi-mimo.env",
     setup_url: "https://platform.xiaomimimo.com",
-    default_model: Some("mimo-v2.5"),
+    default_model: Some("mimo-v2.5-pro"),
     requires_api_key: true,
 };
 

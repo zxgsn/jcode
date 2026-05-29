@@ -38,11 +38,40 @@ pub fn is_cache_ttl_1h() -> bool {
     CACHE_TTL_1H.load(Ordering::Relaxed)
 }
 
-/// Anthropic Messages API endpoint
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+/// Default Anthropic Messages API endpoint
+const DEFAULT_API_URL: &str = "https://api.anthropic.com/v1/messages";
+
+/// Get the Anthropic API URL, respecting ANTHROPIC_BASE_URL env var or config.
+fn api_url() -> String {
+    // Check env var first, then fall back to env file config.
+    let base = std::env::var("ANTHROPIC_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            crate::provider_catalog::load_env_value_from_env_or_config(
+                "ANTHROPIC_BASE_URL",
+                "anthropic.env",
+            )
+        });
+
+    if let Some(base) = base {
+        let base = base.trim_end_matches('/');
+        if base.ends_with("/v1/messages") {
+            base.to_string()
+        } else if base.ends_with("/v1") {
+            format!("{}/messages", base)
+        } else {
+            format!("{}/v1/messages", base)
+        }
+    } else {
+        DEFAULT_API_URL.to_string()
+    }
+}
 
 /// OAuth endpoint (with beta=true query param)
-const API_URL_OAUTH: &str = "https://api.anthropic.com/v1/messages?beta=true";
+fn api_url_oauth() -> String {
+    format!("{}?beta=true", api_url())
+}
 
 /// User-Agent for OAuth requests, matching the official Claude Code CLI.
 pub(crate) const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.123 (external, sdk-cli)";
@@ -429,6 +458,14 @@ impl AnthropicCredentialMode {
 }
 
 pub(crate) fn load_anthropic_api_key() -> Result<String> {
+    // Check ANTHROPIC_AUTH_TOKEN first (used by some proxies like Xiaomi MiMo),
+    // then fall back to standard ANTHROPIC_API_KEY.
+    if let Ok(key) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
+        let trimmed = key.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
     crate::provider_catalog::load_api_key_from_env_or_config("ANTHROPIC_API_KEY", "anthropic.env")
         .context("No Anthropic API key found")
 }
@@ -458,13 +495,28 @@ impl AnthropicProvider {
     }
 
     pub fn new() -> Self {
-        let model = std::env::var("JCODE_ANTHROPIC_MODEL").unwrap_or_else(|_| {
-            if Self::is_usage_exhausted() {
-                "claude-sonnet-4-6".to_string()
-            } else {
-                DEFAULT_MODEL.to_string()
-            }
-        });
+        let model = std::env::var("JCODE_ANTHROPIC_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                crate::provider_catalog::load_env_value_from_env_or_config(
+                    "JCODE_ANTHROPIC_MODEL",
+                    "anthropic.env",
+                )
+            })
+            .or_else(|| {
+                crate::provider_catalog::load_env_value_from_env_or_config(
+                    "ANTHROPIC_MODEL",
+                    "anthropic.env",
+                )
+            })
+            .unwrap_or_else(|| {
+                if Self::is_usage_exhausted() {
+                    "claude-sonnet-4-6".to_string()
+                } else {
+                    DEFAULT_MODEL.to_string()
+                }
+            });
 
         // Trigger background usage fetch so extra_usage is known before first API call
         let _ = tokio::runtime::Handle::try_current().map(|_| {
@@ -1769,7 +1821,7 @@ async fn stream_response(
 
     let connect_start = std::time::Instant::now();
     // Build request with appropriate auth headers
-    let url = if is_oauth { API_URL_OAUTH } else { API_URL };
+    let url = if is_oauth { api_url_oauth() } else { api_url() };
 
     let mut req = client
         .post(url)
