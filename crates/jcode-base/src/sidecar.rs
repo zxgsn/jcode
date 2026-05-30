@@ -6,6 +6,7 @@
 //! Automatically selects the best available backend:
 //! - OpenAI (gpt-5.3-codex-spark) if Codex credentials are available
 //! - Claude (claude-haiku-4-5-20241022) if Claude credentials are available
+//! - OpenAI-compatible (via OpenRouter or custom endpoint) as fallback
 
 use crate::auth;
 use anyhow::{Context, Result};
@@ -47,6 +48,8 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 enum SidecarBackend {
     OpenAI,
     Claude,
+    /// Generic OpenAI-compatible Chat Completions API (OpenRouter, custom endpoints, etc.)
+    ChatCompletions,
 }
 
 /// Lightweight client for fast sidecar calls
@@ -56,6 +59,10 @@ pub struct Sidecar {
     model: String,
     max_tokens: u32,
     backend: SidecarBackend,
+    /// API base URL (only used for ChatCompletions backend)
+    api_base: Option<String>,
+    /// API key (only used for ChatCompletions backend)
+    api_key: Option<String>,
 }
 
 impl Sidecar {
@@ -67,29 +74,36 @@ impl Sidecar {
     }
 
     fn with_configured_model(configured_model: Option<String>) -> Self {
-        let (backend, model) = if let Some(model) = configured_model {
+        let (backend, model, api_base, api_key) = if let Some(model) = configured_model {
             match crate::provider::provider_for_model(&model) {
-                Some("openai") => (SidecarBackend::OpenAI, model),
-                Some("claude") => (SidecarBackend::Claude, model),
+                Some("openai") => (SidecarBackend::OpenAI, model, None, None),
+                Some("claude") => (SidecarBackend::Claude, model, None, None),
                 _ => {
-                    crate::logging::warn(&format!(
-                        "Ignoring unsupported memory sidecar model override '{}'; expected an OpenAI or Claude model",
-                        model
-                    ));
-                    if auth::codex::load_credentials().is_ok() {
-                        (SidecarBackend::OpenAI, SIDECAR_OPENAI_MODEL.to_string())
+                    // Try to route through OpenAI-compatible endpoint (openrouter, etc.)
+                    if let Some((base, key)) = Self::resolve_openai_compatible_endpoint() {
+                        crate::logging::info(&format!(
+                            "Memory sidecar model '{}' routed through OpenAI-compatible endpoint",
+                            model
+                        ));
+                        (SidecarBackend::ChatCompletions, model, Some(base), Some(key))
                     } else {
-                        (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())
+                        crate::logging::warn(&format!(
+                            "Ignoring unsupported memory sidecar model override '{}'; no compatible credentials found",
+                            model
+                        ));
+                        Self::fallback_backend()
                     }
                 }
             }
         } else if auth::codex::load_credentials().is_ok() {
-            (SidecarBackend::OpenAI, SIDECAR_OPENAI_MODEL.to_string())
+            (SidecarBackend::OpenAI, SIDECAR_OPENAI_MODEL.to_string(), None, None)
         } else if auth::claude::load_credentials().is_ok() {
-            (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())
+            (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string(), None, None)
+        } else if let Some((base, key)) = Self::resolve_openai_compatible_endpoint() {
+            crate::logging::info("Memory sidecar using OpenAI-compatible endpoint as fallback");
+            (SidecarBackend::ChatCompletions, Self::default_compatible_model(), Some(base), Some(key))
         } else {
-            // Default to Claude - will fail on use with a clear error
-            (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())
+            Self::fallback_backend()
         };
 
         Self {
@@ -97,7 +111,42 @@ impl Sidecar {
             model,
             max_tokens: DEFAULT_MAX_TOKENS,
             backend,
+            api_base,
+            api_key,
         }
+    }
+
+    /// Try to resolve an OpenAI-compatible API endpoint from openrouter config or env vars.
+    fn resolve_openai_compatible_endpoint() -> Option<(String, String)> {
+        // Try openrouter API key first (most common OpenAI-compatible provider)
+        let key = crate::provider_catalog::load_api_key_from_env_or_config(
+            "OPENROUTER_API_KEY", "openrouter.env",
+        ).or_else(|| {
+            // Also check common OpenAI-compatible env vars
+            crate::provider_catalog::load_api_key_from_env_or_config(
+                "OPENAI_API_KEY", "openai.env",
+            )
+        })?;
+
+        let base = std::env::var("JCODE_OPENROUTER_API_BASE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+
+        Some((base, key))
+    }
+
+    /// Default model for the OpenAI-compatible fallback path.
+    fn default_compatible_model() -> String {
+        // If a model was configured in the openrouter profile, use it;
+        // otherwise fall back to a cheap, fast model.
+        "mimo-v2.5".to_string()
+    }
+
+    /// Fallback when no credentials are available at all.
+    fn fallback_backend() -> (SidecarBackend, String, Option<String>, Option<String>) {
+        crate::logging::warn("No sidecar credentials found; sidecar calls will fail");
+        (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string(), None, None)
     }
 
     /// Return the currently selected sidecar model name.
@@ -110,6 +159,7 @@ impl Sidecar {
         match self.backend {
             SidecarBackend::OpenAI => "openai",
             SidecarBackend::Claude => "claude",
+            SidecarBackend::ChatCompletions => "chat-completions",
         }
     }
 
@@ -119,6 +169,9 @@ impl Sidecar {
         match self.backend {
             SidecarBackend::OpenAI => self.complete_openai(system, user_message).await,
             SidecarBackend::Claude => self.complete_claude(system, user_message).await,
+            SidecarBackend::ChatCompletions => {
+                self.complete_chat_completions(system, user_message).await
+            }
         }
     }
 
@@ -319,6 +372,64 @@ impl Sidecar {
             })
             .collect::<Vec<_>>()
             .join("");
+
+        Ok(text)
+    }
+
+    /// Complete via generic OpenAI-compatible Chat Completions API.
+    /// Works with OpenRouter, local proxies, and other compatible endpoints.
+    async fn complete_chat_completions(&self, system: &str, user_message: &str) -> Result<String> {
+        let api_base = self
+            .api_base
+            .as_deref()
+            .unwrap_or("https://openrouter.ai/api/v1");
+        let api_key = self
+            .api_key
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("No API key configured for ChatCompletions sidecar"))?;
+
+        let url = format!("{}/chat/completions", api_base.trim_end_matches('/'));
+
+        let request = serde_json::json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user_message }
+            ]
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send request to ChatCompletions API")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("ChatCompletions API error ({}): {}", status, error_text);
+        }
+
+        let result: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse ChatCompletions API response")?;
+
+        let text = result["choices"]
+            .as_array()
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice["message"]["content"].as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if text.is_empty() {
+            anyhow::bail!("ChatCompletions API returned empty response");
+        }
 
         Ok(text)
     }
