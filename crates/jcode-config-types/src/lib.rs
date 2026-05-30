@@ -352,7 +352,7 @@ pub struct AuthConfig {
 }
 
 /// Agent-specific model defaults.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentsConfig {
     /// Optional default model override for spawned swarm/subagent sessions.
@@ -368,6 +368,17 @@ pub struct AgentsConfig {
     pub memory_model: Option<String>,
     /// Whether memory should use the sidecar for relevance/extraction.
     pub memory_sidecar_enabled: bool,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self {
+            swarm_model: None,
+            swarm_spawn_mode: SwarmSpawnMode::default(),
+            memory_model: None,
+            memory_sidecar_enabled: true,
+        }
+    }
 }
 
 /// How swarm-created agents should be spawned.
