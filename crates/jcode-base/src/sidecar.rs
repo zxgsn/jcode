@@ -99,6 +99,14 @@ impl Sidecar {
             (SidecarBackend::OpenAI, SIDECAR_OPENAI_MODEL.to_string(), None, None)
         } else if auth::claude::load_credentials().is_ok() {
             (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string(), None, None)
+        } else if let Some((base, key)) = Self::resolve_anthropic_api_key_endpoint() {
+            // Anthropic-compatible API key (mimo, direct Anthropic, etc.)
+            crate::logging::info("Memory sidecar using Anthropic API key");
+            (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string(), Some(base), Some(key))
+        } else if let Some((base, key, model)) = Self::resolve_deepseek_endpoint() {
+            // DeepSeek Anthropic-compatible API
+            crate::logging::info(&format!("Memory sidecar using DeepSeek ({})", model));
+            (SidecarBackend::Claude, model, Some(base), Some(key))
         } else if let Some((base, key)) = Self::resolve_openai_compatible_endpoint() {
             crate::logging::info("Memory sidecar using OpenAI-compatible endpoint as fallback");
             (SidecarBackend::ChatCompletions, Self::default_compatible_model(), Some(base), Some(key))
@@ -134,6 +142,84 @@ impl Sidecar {
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
 
         Some((base, key))
+    }
+
+    /// Try to resolve Anthropic API key and base URL for API-key-based Claude calls.
+    /// Returns (api_url, api_key) if an Anthropic API key is available.
+    /// Supports ANTHROPIC_AUTH_TOKEN (Xiaomi MiMo proxy, DeepSeek, etc.) and ANTHROPIC_API_KEY.
+    fn resolve_anthropic_api_key_endpoint() -> Option<(String, String)> {
+        let key = if let Ok(key) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
+            let trimmed = key.trim().to_string();
+            if !trimmed.is_empty() {
+                trimmed
+            } else {
+                return None;
+            }
+        } else {
+            crate::provider_catalog::load_api_key_from_env_or_config(
+                "ANTHROPIC_API_KEY", "anthropic.env",
+            )?
+        };
+
+        let base = std::env::var("ANTHROPIC_BASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                crate::provider_catalog::load_api_key_from_env_or_config(
+                    "ANTHROPIC_BASE_URL", "anthropic.env",
+                )
+            })
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+
+        // Normalize to /v1/messages endpoint
+        let url = if base.ends_with("/v1/messages") {
+            base
+        } else if base.ends_with("/v1") {
+            format!("{}/messages", base)
+        } else {
+            format!("{}/v1/messages", base.trim_end_matches('/'))
+        };
+
+        Some((url, key))
+    }
+
+    /// Try to resolve DeepSeek Anthropic-compatible API endpoint.
+    /// Returns (api_url, api_key, model) if DEEPSEEK_API_KEY is available.
+    /// Uses DEEPSEEK_BASE_URL (default: https://api.deepseek.com/anthropic)
+    /// and DEEPSEEK_MODEL (default: deepseek-v4-flash).
+    fn resolve_deepseek_endpoint() -> Option<(String, String, String)> {
+        let key = crate::provider_catalog::load_api_key_from_env_or_config(
+            "DEEPSEEK_API_KEY", "deepseek.env",
+        )?;
+
+        let base = std::env::var("DEEPSEEK_BASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                crate::provider_catalog::load_api_key_from_env_or_config(
+                    "DEEPSEEK_BASE_URL", "deepseek.env",
+                )
+            })
+            .unwrap_or_else(|| "https://api.deepseek.com/anthropic".to_string());
+
+        let model = std::env::var("DEEPSEEK_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "deepseek-v4-flash".to_string());
+
+        // Normalize to /v1/messages endpoint
+        let url = if base.ends_with("/v1/messages") {
+            base
+        } else if base.ends_with("/v1") {
+            format!("{}/messages", base)
+        } else if base.contains("/anthropic") {
+            // DeepSeek uses /anthropic/v1/messages
+            format!("{}/v1/messages", base.trim_end_matches('/'))
+        } else {
+            format!("{}/v1/messages", base.trim_end_matches('/'))
+        };
+
+        Some((url, key, model))
     }
 
     /// Default model for the OpenAI-compatible fallback path.
@@ -321,8 +407,8 @@ impl Sidecar {
 
     /// Complete via Claude Messages API
     async fn complete_claude(&self, system: &str, user_message: &str) -> Result<String> {
-        let creds = auth::claude::load_credentials()
-            .context("Failed to load Claude credentials for sidecar")?;
+        // Support two auth modes: API key (self.api_key) or OAuth (auth::claude)
+        let use_api_key = self.api_key.is_some();
 
         let request = ClaudeMessagesRequest {
             model: &self.model,
@@ -334,20 +420,43 @@ impl Sidecar {
             }],
         };
 
-        let response = crate::provider::anthropic::apply_oauth_attribution_headers(
+        let url = if use_api_key {
+            self.api_base.as_deref().unwrap_or(CLAUDE_API_URL).to_string()
+        } else {
+            CLAUDE_API_URL.to_string()
+        };
+
+        let response = if use_api_key {
+            // API key mode (DeepSeek, mimo proxy, direct Anthropic API key, etc.)
+            let api_key = self.api_key.as_deref().unwrap();
             self.client
-                .post(CLAUDE_API_URL)
-                .header("Authorization", format!("Bearer {}", creds.access_token))
-                .header("User-Agent", CLAUDE_CLI_USER_AGENT)
+                .post(&url)
+                .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
-                .header("anthropic-beta", OAUTH_BETA_HEADERS)
                 .header("content-type", "application/json")
-                .json(&request),
-            &crate::provider::anthropic::new_oauth_request_id(),
-        )
-        .send()
-        .await
-        .context("Failed to send request to Claude API")?;
+                .json(&request)
+                .send()
+                .await
+                .context("Failed to send request to Claude-compatible API")?
+        } else {
+            // OAuth mode (Claude Code OAuth)
+            let creds = auth::claude::load_credentials()
+                .context("Failed to load Claude credentials for sidecar")?;
+            crate::provider::anthropic::apply_oauth_attribution_headers(
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", creds.access_token))
+                    .header("User-Agent", CLAUDE_CLI_USER_AGENT)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("anthropic-beta", OAUTH_BETA_HEADERS)
+                    .header("content-type", "application/json")
+                    .json(&request),
+                &crate::provider::anthropic::new_oauth_request_id(),
+            )
+            .send()
+            .await
+            .context("Failed to send request to Claude API")?
+        };
 
         if !response.status().is_success() {
             let status = response.status();
