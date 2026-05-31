@@ -593,7 +593,13 @@ impl SelfDevTool {
         }
 
         match OpenOptions::new().create_new(true).write(true).open(&path) {
-            Ok(file) => Ok(Some(BuildLockGuard { _file: Some(file), path })),
+            Ok(_file) => {
+                // On Windows, close the file handle immediately so the stale
+                // check in other processes can still delete the file. The file's
+                // *existence* on disk is the lock indicator, not the handle.
+                drop(_file);
+                Ok(Some(BuildLockGuard { _file: None, path }))
+            }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
             Err(err) => Err(err.into()),
         }

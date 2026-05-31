@@ -16,3 +16,10 @@
 # comfortably memory-safe on a ~15 GiB machine while staying parallel. The
 # adaptive dev_cargo.sh path uses every core when memory allows.
 jobs = 4
+
+# Use GNU toolchain on Windows (requires MinGW)
+# Comment this out if you have Visual Studio Build Tools installed
+# and want to use MSVC instead
+[target.x86_64-pc-windows-gnu]
+linker = "gcc"
+rustflags = ["-C", "link-arg=-lstdc++"]

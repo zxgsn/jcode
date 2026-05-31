@@ -30,7 +30,22 @@ pub fn atomic_symlink_swap(src: &Path, dst: &Path, temp: &Path) -> std::io::Resu
     #[cfg(windows)]
     {
         let _ = std::fs::remove_file(temp);
-        let _ = std::fs::remove_file(dst);
+        // On Windows, a running .exe cannot be deleted but CAN be renamed.
+        // If remove_file fails (file locked by running process), rename it away
+        // first, then copy the new binary into place.
+        if std::fs::remove_file(dst).is_err() {
+            let stale = dst.with_extension(format!(
+                "{}.old-{}",
+                dst.extension().and_then(|e| e.to_str()).unwrap_or("exe"),
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&stale);
+            if std::fs::rename(dst, &stale).is_err() {
+                // Neither delete nor rename worked; propagate the copy error.
+                std::fs::copy(src, dst).map(|_| ())?;
+                return Ok(());
+            }
+        }
         std::fs::copy(src, dst).map(|_| ())?;
     }
     Ok(())
