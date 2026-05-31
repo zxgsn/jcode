@@ -274,9 +274,21 @@ impl SelfDevTool {
         let published = if SelfDevTool::is_test_session() {
             None
         } else {
-            Some(build::publish_local_current_build_for_source(
-                &repo_dir, &source,
-            )?)
+            match build::publish_local_current_build_for_source(&repo_dir, &source) {
+                Ok(published) => Some(published),
+                Err(err) => {
+                    // Binary is stale (source changed after last build).
+                    // Automatically rebuild before retrying publish.
+                    crate::logging::info(&format!(
+                        "selfdev reload: binary stale ({}), triggering rebuild",
+                        err
+                    ));
+                    build::run_selfdev_build(&repo_dir)?;
+                    Some(build::publish_local_current_build_for_source(
+                        &repo_dir, &source,
+                    )?)
+                }
+            }
         };
         let previous_shared_server_version = if SelfDevTool::is_test_session() {
             None
