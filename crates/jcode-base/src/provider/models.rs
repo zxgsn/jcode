@@ -18,7 +18,7 @@ use catalog_service::{ModelCatalogService, RuntimeModelUnavailability};
 use jcode_provider_core::{
     ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, ModelCapabilities, ModelRoute,
     context_limit_for_model_with_provider_and_cache, core_provider_for_model_with_hint,
-    provider_key_from_hint, shared_http_client,
+    profile_model_prefix_match, provider_key_from_hint, shared_http_client,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -980,6 +980,9 @@ pub fn provider_for_model_with_hint(
         Some("antigravity")
     } else if cursor::is_known_model(model) {
         Some("cursor")
+    } else if profile_model_prefix_match(model).is_some() {
+        // Known OpenAI-compatible profile model (e.g. mimo-v2.5, deepseek-v4-flash)
+        Some("openrouter")
     } else {
         None
     }

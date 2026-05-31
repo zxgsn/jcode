@@ -386,7 +386,7 @@ pub const NVIDIA_NIM_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile 
 pub const XIAOMI_MIMO_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "xiaomi-mimo",
     display_name: "Xiaomi MiMo",
-    api_base: "https://api.xiaomimimo.com/v1",
+    api_base: "https://token-plan-cn.xiaomimimo.com/v1",
     api_key_env: "XIAOMI_MIMO_API_KEY",
     env_file: "xiaomi-mimo.env",
     setup_url: "https://platform.xiaomimimo.com",

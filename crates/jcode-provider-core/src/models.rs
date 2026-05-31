@@ -10,9 +10,6 @@ pub const ALL_CLAUDE_MODELS: &[&str] = &[
     "claude-opus-4-5",
     "claude-sonnet-4-5",
     "claude-sonnet-4-20250514",
-    // Xiaomi MiMo models (Anthropic-compatible)
-    "mimo-v2.5-pro",
-    "mimo-v2.5",
 ];
 
 /// Available OpenAI models used by model lists and provider routing.
@@ -38,6 +35,14 @@ pub const ALL_OPENAI_MODELS: &[&str] = &[
     "gpt-5-mini",
     "gpt-5-nano",
     "gpt-5",
+];
+
+/// Model prefixes that belong to known OpenAI-compatible provider profiles.
+/// Used to route bare model names (without explicit `profile:` prefix) to the
+/// correct provider when the model is known to belong to a specific profile.
+pub const PROFILE_MODEL_PREFIXES: &[(&str, &str)] = &[
+    ("mimo-", "xiaomi-mimo"),
+    ("deepseek-", "deepseek"),
 ];
 
 /// Default context window size when model-specific data isn't known.
@@ -134,9 +139,29 @@ pub fn provider_for_model_with_hint(
         Some("openai")
     } else if model.starts_with("gemini-") {
         Some("gemini")
+    } else if profile_model_prefix_match(model).is_some() {
+        // Known OpenAI-compatible profile model (e.g. mimo-v2.5, deepseek-v4-flash)
+        Some("openrouter")
     } else {
         None
     }
+}
+
+/// Check if a bare model name matches a known OpenAI-compatible provider
+/// profile model prefix. Returns the profile ID if matched.
+///
+/// This resolves ambiguity when a model like `mimo-v2.5` or `deepseek-v4-flash`
+/// is requested without an explicit `profile:model` prefix. Without this check,
+/// the model would fall through to the current active provider, which may be
+/// wrong (e.g. sending mimo-v2.5 to DeepSeek's API).
+pub fn profile_model_prefix_match(model: &str) -> Option<&'static str> {
+    let model = model.trim();
+    for (prefix, profile_id) in PROFILE_MODEL_PREFIXES {
+        if model.starts_with(prefix) {
+            return Some(profile_id);
+        }
+    }
+    None
 }
 
 pub fn provider_for_model(model: &str) -> Option<&'static str> {
@@ -279,5 +304,38 @@ mod tests {
             Some("claude-opus-4-6")
         );
         assert_eq!(normalize_copilot_model_name("claude-opus-4-6"), None);
+    }
+
+    #[test]
+    fn mimo_models_route_to_openrouter_not_claude() {
+        // mimo-v2.5 should NOT route to Claude provider
+        assert_ne!(provider_for_model("mimo-v2.5"), Some("claude"));
+        // It should route to OpenRouter (OpenAI-compatible profile)
+        assert_eq!(provider_for_model("mimo-v2.5"), Some("openrouter"));
+        assert_eq!(provider_for_model("mimo-v2.5-pro"), Some("openrouter"));
+    }
+
+    #[test]
+    fn deepseek_models_route_to_openrouter() {
+        assert_eq!(provider_for_model("deepseek-v4-flash"), Some("openrouter"));
+        assert_eq!(provider_for_model("deepseek-v4-pro"), Some("openrouter"));
+    }
+
+    #[test]
+    fn profile_model_prefix_match_identifies_profiles() {
+        assert_eq!(
+            profile_model_prefix_match("mimo-v2.5"),
+            Some("xiaomi-mimo")
+        );
+        assert_eq!(
+            profile_model_prefix_match("mimo-v2.5-pro"),
+            Some("xiaomi-mimo")
+        );
+        assert_eq!(
+            profile_model_prefix_match("deepseek-v4-flash"),
+            Some("deepseek")
+        );
+        assert_eq!(profile_model_prefix_match("claude-sonnet-4-6"), None);
+        assert_eq!(profile_model_prefix_match("gpt-5.4"), None);
     }
 }
