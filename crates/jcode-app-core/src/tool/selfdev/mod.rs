@@ -344,7 +344,7 @@ impl BuildRequest {
 }
 
 struct BuildLockGuard {
-    _file: std::fs::File,
+    _file: Option<std::fs::File>,
     path: PathBuf,
 }
 
@@ -353,6 +353,16 @@ type SelfDevBuildCommand = build::SelfDevBuildCommand;
 #[cfg(unix)]
 impl Drop for BuildLockGuard {
     fn drop(&mut self) {
+        drop(self._file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for BuildLockGuard {
+    fn drop(&mut self) {
+        // On Windows the file's existence IS the lock; remove on release.
+        drop(self._file.take());
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -556,7 +566,7 @@ impl SelfDevTool {
             .open(&path)?;
         let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if ret == 0 {
-            Ok(Some(BuildLockGuard { _file: file, path }))
+            Ok(Some(BuildLockGuard { _file: Some(file), path }))
         } else {
             Ok(None)
         }
@@ -567,8 +577,23 @@ impl SelfDevTool {
         use std::fs::OpenOptions;
 
         let path = Self::build_lock_path(worktree_scope)?;
+        // Remove stale lock files left by previous processes (before the Drop fix,
+        // Windows never cleaned up lock files). A lock file older than 5 minutes
+        // is almost certainly stale since cargo builds don't normally block that long.
+        if path.exists() {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(elapsed) = modified.elapsed() {
+                        if elapsed.as_secs() > 300 {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
+        }
+
         match OpenOptions::new().create_new(true).write(true).open(&path) {
-            Ok(file) => Ok(Some(BuildLockGuard { _file: file, path })),
+            Ok(file) => Ok(Some(BuildLockGuard { _file: Some(file), path })),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
             Err(err) => Err(err.into()),
         }
