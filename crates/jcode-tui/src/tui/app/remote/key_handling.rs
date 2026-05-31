@@ -248,12 +248,17 @@ pub(in crate::tui::app) async fn handle_remote_key_event(
     event: KeyEvent,
     remote: &mut RemoteConnection,
 ) -> Result<()> {
+    let text_input = input::text_input_for_key_event(&event);
+    if app.handle_runtime_paste_burst_event(event.code, event.modifiers, text_input.as_deref()) {
+        app.follow_chat_bottom_for_typing();
+        return Ok(());
+    }
     handle_remote_key_internal(
         app,
         event.code,
         event.modifiers,
         remote,
-        input::text_input_for_key_event(&event),
+        text_input,
     )
     .await
 }

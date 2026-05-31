@@ -18,6 +18,8 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 const INPUT_SHELL_MAX_OUTPUT_LEN: usize = 30_000;
+const RUNTIME_PASTE_BURST_IDLE_MS: u64 = 40;
+const RUNTIME_PASTE_BURST_MAX_MS: u64 = 1_500;
 
 pub(super) fn edit_input_in_external_editor(app: &mut App) {
     match edit_text_in_external_editor(&app.input) {
@@ -569,6 +571,7 @@ where
 }
 
 pub(super) fn handle_paste(app: &mut App, text: String) {
+    app.reset_runtime_paste_burst();
     // Note: clipboard_image() is NOT checked here. Bracketed paste events from the
     // terminal always deliver text. Checking clipboard_image() here caused a bug where
     // text pastes were misidentified as images when the clipboard also had image data
@@ -1968,10 +1971,14 @@ impl App {
     }
 
     pub(super) fn handle_key_press_event(&mut self, event: KeyEvent) -> Result<()> {
+        let text_input = text_input_for_key_event(&event);
+        if self.handle_runtime_paste_burst_event(event.code, event.modifiers, text_input.as_deref()) {
+            return Ok(());
+        }
         self.handle_key_core(
             event.code,
             event.modifiers,
-            text_input_for_key_event(&event),
+            text_input,
         )
     }
 
@@ -2122,6 +2129,99 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub(in crate::tui::app) fn handle_runtime_paste_burst_event(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        text_input: Option<&str>,
+    ) -> bool {
+        let now = Instant::now();
+        self.expire_runtime_paste_burst(now);
+
+        if modifiers.is_empty() {
+            if let Some(text) = text_input.filter(|text| !text.is_empty()) {
+                self.note_runtime_paste_burst_text(now, text);
+                return false;
+            }
+
+            if code == KeyCode::Enter && self.runtime_paste_burst_can_consume_enter(now) {
+                handle_shift_enter(self);
+                return true;
+            }
+        }
+
+        self.reset_runtime_paste_burst();
+        false
+    }
+
+    fn note_runtime_paste_burst_text(&mut self, now: Instant, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        let idle_reset = Duration::from_millis(RUNTIME_PASTE_BURST_IDLE_MS);
+        let max_window = Duration::from_millis(RUNTIME_PASTE_BURST_MAX_MS);
+        let burst = &mut self.runtime_paste_burst;
+        let idle_too_long = burst
+            .last_event_at
+            .map(|last| now.saturating_duration_since(last) > idle_reset)
+            .unwrap_or(false);
+        let burst_too_old = burst
+            .started_at
+            .map(|started| now.saturating_duration_since(started) > max_window)
+            .unwrap_or(false);
+        if idle_too_long || burst_too_old {
+            *burst = Default::default();
+        }
+
+        burst.started_at.get_or_insert(now);
+        burst.last_event_at = Some(now);
+        burst.last_text_at = Some(now);
+    }
+
+    fn runtime_paste_burst_can_consume_enter(&mut self, now: Instant) -> bool {
+        let idle_reset = Duration::from_millis(RUNTIME_PASTE_BURST_IDLE_MS);
+        let max_window = Duration::from_millis(RUNTIME_PASTE_BURST_MAX_MS);
+        let burst = &mut self.runtime_paste_burst;
+        let Some(last_text_at) = burst.last_text_at else {
+            return false;
+        };
+
+        let stale = now.saturating_duration_since(last_text_at) > idle_reset
+            || burst
+                .started_at
+                .map(|started| now.saturating_duration_since(started) > max_window)
+                .unwrap_or(false);
+        if stale {
+            *burst = Default::default();
+            return false;
+        }
+
+        burst.last_event_at = Some(now);
+        true
+    }
+
+    fn expire_runtime_paste_burst(&mut self, now: Instant) {
+        let idle_reset = Duration::from_millis(RUNTIME_PASTE_BURST_IDLE_MS);
+        let max_window = Duration::from_millis(RUNTIME_PASTE_BURST_MAX_MS);
+        let burst = &self.runtime_paste_burst;
+        let expired = burst
+            .last_event_at
+            .map(|last| now.saturating_duration_since(last) > idle_reset)
+            .unwrap_or(false)
+            || burst
+                .started_at
+                .map(|started| now.saturating_duration_since(started) > max_window)
+                .unwrap_or(false);
+        if expired {
+            self.reset_runtime_paste_burst();
+        }
+    }
+
+    fn reset_runtime_paste_burst(&mut self) {
+        self.runtime_paste_burst = Default::default();
     }
 
     pub(super) fn request_full_redraw(&mut self) {
@@ -2387,6 +2487,7 @@ impl App {
 
     /// Submit input - just sets up message and flags, processing happens in next loop iteration
     pub(super) fn submit_input(&mut self) {
+        self.reset_runtime_paste_burst();
         if self.activate_picker_from_preview() {
             return;
         }

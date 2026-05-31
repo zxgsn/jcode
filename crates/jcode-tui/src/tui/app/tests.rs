@@ -580,3 +580,42 @@ fn oversized_pasted_submit_is_rejected_and_preserves_input() {
                 && message.content.contains("Message is too large to send"))
     );
 }
+
+#[test]
+fn rapid_multiline_key_bursts_insert_newlines_instead_of_submitting() {
+    let mut app = create_test_app();
+    let modifiers = crossterm::event::KeyModifiers::empty();
+
+    for event in [
+        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('a'), modifiers),
+        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, modifiers),
+        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('b'), modifiers),
+        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, modifiers),
+    ] {
+        app.handle_key_press_event(event).unwrap();
+    }
+
+    assert_eq!(app.input, "a\nb\n");
+    assert!(!app.is_processing, "paste-burst fallback must not submit early");
+}
+
+#[test]
+fn manual_enter_after_idle_still_submits_input() {
+    let mut app = create_test_app();
+    let modifiers = crossterm::event::KeyModifiers::empty();
+
+    app.handle_key_press_event(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('a'),
+        modifiers,
+    ))
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    app.handle_key_press_event(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        modifiers,
+    ))
+    .unwrap();
+
+    assert!(app.is_processing, "idle enter should keep its normal submit behavior");
+    assert!(app.input.is_empty(), "submitted input should be drained");
+}

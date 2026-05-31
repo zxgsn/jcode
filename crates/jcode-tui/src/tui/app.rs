@@ -715,6 +715,9 @@ pub struct App {
     pasted_contents: Vec<String>,
     // Pending pasted images (media_type, base64_data) attached to next message
     pending_images: Vec<(String, String)>,
+    // Best-effort fallback for terminals that replay pasted text as rapid key presses
+    // instead of emitting a bracketed paste event.
+    runtime_paste_burst: RuntimePasteBurst,
     // One-shot flag: the next submitted prompt is routed to a new headed session.
     route_next_prompt_to_new_session: bool,
     // Restore-time flag: auto-submit restored input after startup.
@@ -1081,6 +1084,13 @@ pub struct App {
     usage_report_refreshing: bool,
     /// Last time the passive overnight progress card polled its run files.
     last_overnight_card_refresh: Option<Instant>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RuntimePasteBurst {
+    started_at: Option<Instant>,
+    last_event_at: Option<Instant>,
+    last_text_at: Option<Instant>,
 }
 
 /// Inert provider used by runtime modes whose output is supplied by another source.
