@@ -1,0 +1,62 @@
+# rust-analyzer configuration for jcode project
+# See: https://rust-analyzer.github.io/manual.html#configuration
+
+# Use the GNU toolchain (matching the project's build setup on Windows MINGW)
+[toolchain]
+channel = "stable"
+components = ["rust-src", "rustfmt", "clippy"]
+
+# Cargo configuration
+[cargo]
+# Use the release profile for faster analysis (debug is too slow for this large project)
+# Uncomment below if you prefer debug-mode analysis:
+# targetDir = "target"
+features = []
+allFeatures = false
+target = null
+extraArgs = []
+
+[cargo.env]
+RUSTUP_HOME = "D:\\rust\\rustup"
+CARGO_HOME = "D:\\rust\\cargo"
+
+# Check configuration
+[check]
+# Use clippy for more thorough analysis
+command = "clippy"
+extraArgs = ["--no-deps", "--profile", "selfdev"]
+features = []
+allTargets = true
+target = null
+
+# Inlay hints
+[inlayHints]
+# Type hints
+typeHints.enable = true
+typeHints.chainingHints.enable = true
+typeHints.closureReturnTypeHints.enable = "always"
+typeHints.expressionAdjustmentHints.enable = "never"
+typeHints.lifetimeElisionHints.enable = "never"
+typeHints.parameterHints.enable = true
+typeHints.reborrowHints.enable = "never"
+typeHints.renderColons = true
+
+# Diagnostic configuration
+[diagnostics]
+enable = true
+disabled = []
+warningsAsInfo = []
+warningsAsHint = []
+
+# Completion
+[completion]
+autoimport.enable = true
+autoself.enable = true
+callable.snippets = "fill_arguments"
+postfix.enable = true
+privateEditable.enable = false
+
+# Workspace discovery
+[workspace]
+discoverConfig = null
+symbol.search.scope = "workspace"

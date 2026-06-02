@@ -151,10 +151,27 @@ pub fn selfdev_build_command_for_target(
     }
 
     let command = display_build_command("cargo", &specs);
-    SelfDevBuildCommand {
-        program: "bash".to_string(),
-        args: vec!["-lc".to_string(), command.clone()],
-        display: command,
+    if cfg!(windows) {
+        // On Windows, invoke cargo directly (bash is typically unavailable).
+        SelfDevBuildCommand {
+            program: "cargo".to_string(),
+            args: vec![
+                "build".to_string(),
+                "--profile".to_string(),
+                SELFDEV_CARGO_PROFILE.to_string(),
+                "-p".to_string(),
+                specs[0].0.to_string(),
+                "--bin".to_string(),
+                specs[0].1.to_string(),
+            ],
+            display: command,
+        }
+    } else {
+        SelfDevBuildCommand {
+            program: "bash".to_string(),
+            args: vec!["-lc".to_string(), command.clone()],
+            display: command,
+        }
     }
 }
 
